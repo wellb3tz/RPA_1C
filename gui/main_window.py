@@ -2,7 +2,7 @@
 Главное окно приложения
 """
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QTextEdit, QLabel, QLineEdit, QComboBox)
+                             QPushButton, QTextEdit, QLabel, QLineEdit, QCheckBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from monitor.ui_monitor import UIMonitor
 
@@ -12,9 +12,9 @@ class MonitorThread(QThread):
     log_signal = pyqtSignal(str)
     connection_signal = pyqtSignal(bool, str)  # (успех, сообщение)
     
-    def __init__(self, process_name, monitor_mode):
+    def __init__(self, process_name, log_focus, log_clicks):
         super().__init__()
-        self.monitor = UIMonitor(process_name, monitor_mode)
+        self.monitor = UIMonitor(process_name, log_focus, log_clicks)
         self.is_running = False
         
     def run(self):
@@ -24,10 +24,6 @@ class MonitorThread(QThread):
     def stop(self):
         self.is_running = False
         self.monitor.stop_monitoring()
-    
-    def set_mode(self, mode):
-        """Изменить режим мониторинга"""
-        self.monitor.set_mode(mode)
 
 
 class MainWindow(QMainWindow):
@@ -58,14 +54,19 @@ class MainWindow(QMainWindow):
         self.process_input.setPlaceholderText("Введите имя процесса 1С")
         control_layout1.addWidget(self.process_input)
         
-        self.mode_label = QLabel("Режим:")
-        control_layout1.addWidget(self.mode_label)
+        # Чекбоксы для выбора типов событий
+        self.log_label = QLabel("Логировать:")
+        control_layout1.addWidget(self.log_label)
         
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Сканирование элементов", "scan")
-        self.mode_combo.addItem("Только нажатия", "events")
-        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
-        control_layout1.addWidget(self.mode_combo)
+        self.focus_checkbox = QCheckBox("ФОКУС")
+        self.focus_checkbox.setChecked(True)
+        self.focus_checkbox.stateChanged.connect(self.on_settings_changed)
+        control_layout1.addWidget(self.focus_checkbox)
+        
+        self.click_checkbox = QCheckBox("КЛИКИ")
+        self.click_checkbox.setChecked(True)
+        self.click_checkbox.stateChanged.connect(self.on_settings_changed)
+        control_layout1.addWidget(self.click_checkbox)
         
         layout.addLayout(control_layout1)
         
@@ -101,29 +102,40 @@ class MainWindow(QMainWindow):
             self.log_area.append("[ОШИБКА] Введите имя процесса")
             return
         
-        monitor_mode = self.mode_combo.currentData()
-        mode_text = self.mode_combo.currentText()
+        log_focus = self.focus_checkbox.isChecked()
+        log_clicks = self.click_checkbox.isChecked()
+        
+        if not log_focus and not log_clicks:
+            self.log_area.append("[ОШИБКА] Выберите хотя бы один тип событий для логирования")
+            return
+        
+        events = []
+        if log_focus:
+            events.append("ФОКУС")
+        if log_clicks:
+            events.append("КЛИКИ")
+        events_str = ", ".join(events)
             
         self.log_area.append(f"[СТАРТ] Попытка подключения к процессу {process_name}...")
-        self.log_area.append(f"[РЕЖИМ] {mode_text}")
+        self.log_area.append(f"[НАСТРОЙКИ] Логирование: {events_str}")
         self.statusBar().showMessage(f"Подключение к {process_name}...")
             
-        self.monitor_thread = MonitorThread(process_name, monitor_mode)
+        self.monitor_thread = MonitorThread(process_name, log_focus, log_clicks)
         self.monitor_thread.log_signal.connect(self.add_log)
         self.monitor_thread.connection_signal.connect(self.on_connection_status)
         self.monitor_thread.start()
         
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.mode_combo.setEnabled(False)
+        self.focus_checkbox.setEnabled(False)
+        self.click_checkbox.setEnabled(False)
     
-    def on_mode_changed(self):
-        """Обработка изменения режима мониторинга"""
-        if self.monitor_thread and self.monitor_thread.isRunning():
-            mode = self.mode_combo.currentData()
-            mode_text = self.mode_combo.currentText()
-            self.monitor_thread.set_mode(mode)
-            self.log_area.append(f"\n[РЕЖИМ] Переключено на: {mode_text}\n")
+    def on_settings_changed(self):
+        """Обработка изменения настроек логирования"""
+        # Проверяем, что хотя бы один чекбокс включен
+        if not self.focus_checkbox.isChecked() and not self.click_checkbox.isChecked():
+            # Не даем отключить все
+            self.sender().setChecked(True)
         
     def stop_monitoring(self):
         if self.monitor_thread:
@@ -132,7 +144,8 @@ class MainWindow(QMainWindow):
             
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.mode_combo.setEnabled(True)
+        self.focus_checkbox.setEnabled(True)
+        self.click_checkbox.setEnabled(True)
         self.statusBar().showMessage("Мониторинг остановлен")
         self.log_area.append("\n[СТОП] Мониторинг остановлен\n")
         
