@@ -5,6 +5,8 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QLabel, QLineEdit, QCheckBox, QFileDialog)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from monitor.ui_monitor import UIMonitor
+from monitor.operation_analyzer import OperationAnalyzer
+from gui.operation_editor import OperationEditor
 from datetime import datetime
 import os
 
@@ -33,8 +35,22 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.monitor_thread = None
         self.log_file_path = "logs/monitor_history.log"
+        self.operation_analyzer = OperationAnalyzer()
+        self.load_operation_patterns()
         self.ensure_log_directory()
         self.init_ui()
+    
+    def load_operation_patterns(self):
+        """Загрузить паттерны операций из файла при старте"""
+        patterns_file = "config/operation_patterns.json"
+        if os.path.exists(patterns_file):
+            try:
+                import json
+                with open(patterns_file, 'r', encoding='utf-8') as f:
+                    patterns = json.load(f)
+                    self.operation_analyzer.patterns = patterns
+            except Exception as e:
+                pass  # Используем паттерны по умолчанию
         
     def init_ui(self):
         self.setWindowTitle("1С UI Monitor")
@@ -99,6 +115,10 @@ class MainWindow(QMainWindow):
         self.export_btn.clicked.connect(self.export_log)
         control_layout2.addWidget(self.export_btn)
         
+        self.editor_btn = QPushButton("⚙️ Редактор операций")
+        self.editor_btn.clicked.connect(self.open_operation_editor)
+        control_layout2.addWidget(self.editor_btn)
+        
         layout.addLayout(control_layout2)
         
         # Область логов
@@ -113,8 +133,18 @@ class MainWindow(QMainWindow):
         # Область расшифровки
         self.decode_area = QTextEdit()
         self.decode_area.setReadOnly(True)
-        self.decode_area.setMaximumHeight(150)
+        self.decode_area.setMaximumHeight(120)
         layout.addWidget(self.decode_area)
+        
+        # Разделитель для операций
+        operations_label = QLabel("Распознанные операции:")
+        layout.addWidget(operations_label)
+        
+        # Область операций
+        self.operations_area = QTextEdit()
+        self.operations_area.setReadOnly(True)
+        self.operations_area.setMaximumHeight(120)
+        layout.addWidget(self.operations_area)
         
         # Статус бар
         self.statusBar().showMessage("Готов к работе")
@@ -194,10 +224,15 @@ class MainWindow(QMainWindow):
         self.save_to_history(message)
         # Обновляем расшифровку
         self.update_decode(message)
+        # Анализируем операции
+        self.analyze_operation(message)
         
     def clear_log(self):
         self.log_area.clear()
         self.decode_area.clear()
+        self.operations_area.clear()
+        # Сбрасываем анализатор операций
+        self.operation_analyzer = OperationAnalyzer()
     
     def ensure_log_directory(self):
         """Создать директорию для логов если её нет"""
@@ -382,3 +417,38 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             pass  # Игнорируем ошибки парсинга
+    
+    def analyze_operation(self, message):
+        """Анализировать действие и распознавать операции"""
+        try:
+            result = self.operation_analyzer.analyze_action(message)
+            
+            if result:
+                # Добавляем результат в область операций
+                self.operations_area.append(result)
+                
+                # Прокручиваем вниз
+                cursor = self.operations_area.textCursor()
+                cursor.movePosition(cursor.End)
+                self.operations_area.setTextCursor(cursor)
+                
+                # Обновляем статистику в статус-баре при завершении операции
+                if '✅ Завершено' in result or '⚠️ Прервано' in result:
+                    stats = self.operation_analyzer.get_statistics()
+                    self.statusBar().showMessage(stats, 5000)
+                    
+        except Exception as e:
+            pass  # Игнорируем ошибки анализа
+    
+    def open_operation_editor(self):
+        """Открыть редактор операций"""
+        editor = OperationEditor(self, self.operation_analyzer)
+        
+        # Загружаем паттерны из файла при открытии
+        if editor.load_patterns_from_file():
+            self.log_area.append("[ИНФО] Паттерны операций загружены из файла\n")
+        
+        editor.exec_()
+        
+        # После закрытия редактора обновляем список операций
+        self.log_area.append("[ИНФО] Редактор операций закрыт. Паттерны обновлены.\n")

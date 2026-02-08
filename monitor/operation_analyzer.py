@@ -1,0 +1,402 @@
+"""
+Анализатор операций - преобразует последовательности действий в бизнес-операции
+"""
+from datetime import datetime, timedelta
+from collections import deque
+
+
+class Operation:
+    """Класс для представления бизнес-операции"""
+    def __init__(self, operation_type, start_time):
+        self.operation_type = operation_type
+        self.start_time = start_time
+        self.end_time = None
+        self.actions = []
+        self.context = {}
+        self.completed = False
+        self.middle_triggers_matched = False  # Флаг: были ли промежуточные триггеры
+        self.matched_middle_triggers = []  # Список сработавших промежуточных триггеров
+        self.unrelated_actions_count = 0  # Счетчик посторонних действий
+    
+    def add_action(self, action):
+        """Добавить действие в операцию"""
+        self.actions.append(action)
+        self.end_time = action.get('timestamp')
+    
+    def get_duration(self):
+        """Получить длительность операции"""
+        if self.start_time and self.end_time:
+            try:
+                start = datetime.strptime(self.start_time, "%H:%M:%S.%f")
+                end = datetime.strptime(self.end_time, "%H:%M:%S.%f")
+                return (end - start).total_seconds()
+            except:
+                return 0
+        return 0
+    
+    def to_string(self):
+        """Преобразовать операцию в строку для отображения"""
+        duration = self.get_duration()
+        actions_count = len(self.actions)
+        
+        result = f"🎯 {self.operation_type}"
+        
+        if self.context:
+            context_str = ", ".join([f"{k}: '{v}'" for k, v in self.context.items()])
+            result += f" ({context_str})"
+        
+        result += f" | ⏱️ {duration:.1f}с | 📊 {actions_count} действий"
+        
+        if self.completed:
+            result += " | ✅ Завершено"
+        
+        return result
+
+
+class OperationAnalyzer:
+    """Анализатор для распознавания бизнес-операций"""
+    
+    def __init__(self):
+        self.recent_actions = deque(maxlen=50)  # Последние 50 действий
+        self.current_operation = None
+        self.completed_operations = []
+        self.operation_timeout = 30  # Таймаут операции в секундах
+        self.max_unrelated_actions = 5  # Максимум посторонних действий
+        
+        # Паттерны операций
+        self.patterns = {
+            'create_document': {
+                'triggers': ['Создать', 'Добавить', 'Новый'],
+                'name': 'Создание документа',
+                'middle_triggers': ['ВВОД', 'ФОКУС'],
+                'completion_triggers': ['Записать', 'Провести', 'ОК']
+            },
+            'edit_document': {
+                'triggers': ['Изменить', 'Редактировать'],
+                'name': 'Редактирование документа',
+                'middle_triggers': ['ВВОД', 'ФОКУС'],
+                'completion_triggers': ['Записать', 'Провести', 'ОК']
+            },
+            'select_item': {
+                'triggers': ['Выбрать', 'Подбор'],
+                'name': 'Выбор элемента',
+                'middle_triggers': ['КЛИК', 'ФОКУС'],
+                'completion_triggers': ['Выбрать', 'ОК']
+            },
+            'fill_form': {
+                'triggers': ['ВВОД'],
+                'name': 'Заполнение формы',
+                'middle_triggers': ['ВВОД', 'ФОКУС', 'КЛИК'],
+                'completion_triggers': ['Записать', 'Провести', 'ОК', 'Сохранить']
+            },
+            'search': {
+                'triggers': ['Найти', 'Поиск'],
+                'name': 'Поиск',
+                'middle_triggers': ['ВВОД'],
+                'completion_triggers': ['Найти', 'ОК']
+            },
+            'delete': {
+                'triggers': ['Удалить', 'Пометить на удаление'],
+                'name': 'Удаление',
+                'middle_triggers': [],
+                'completion_triggers': ['Да', 'ОК']
+            },
+            'print': {
+                'triggers': ['Печать', 'Напечатать'],
+                'name': 'Печать документа',
+                'middle_triggers': [],
+                'completion_triggers': ['Печать', 'ОК']
+            },
+            'report': {
+                'triggers': ['Сформировать', 'Отчет'],
+                'name': 'Формирование отчета',
+                'middle_triggers': ['ВВОД', 'КЛИК'],
+                'completion_triggers': ['Сформировать', 'ОК']
+            }
+        }
+    
+    def parse_action(self, log_message):
+        """Разобрать лог-сообщение в структурированное действие"""
+        try:
+            # Пропускаем служебные сообщения
+            if any(x in log_message for x in ['[СТАРТ]', '[СТОП]', '[ИНФО]', '[НАСТРОЙКИ]', '[УСПЕХ]', '[ОШИБКА]', '[ЭКСПОРТ]']):
+                return None
+            
+            action = {}
+            
+            # Извлекаем timestamp
+            import re
+            timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2}\.\d{3})\]', log_message)
+            if timestamp_match:
+                action['timestamp'] = timestamp_match.group(1)
+            
+            # Извлекаем тип события
+            if 'ФОКУС' in log_message:
+                action['event_type'] = 'ФОКУС'
+            elif 'КЛИК' in log_message:
+                action['event_type'] = 'КЛИК'
+            elif 'ВВОД' in log_message:
+                action['event_type'] = 'ВВОД'
+            else:
+                return None
+            
+            # Извлекаем тип элемента
+            type_match = re.search(r'Type: (\w+)', log_message)
+            if type_match:
+                action['control_type'] = type_match.group(1)
+            
+            # Извлекаем имя элемента
+            name_match = re.search(r"Name: '([^']*)'", log_message)
+            if name_match:
+                action['element_name'] = name_match.group(1)
+            
+            # Извлекаем путь
+            path_match = re.search(r"Путь: (.+?)(?:\s*$)", log_message)
+            if path_match:
+                action['path'] = path_match.group(1).strip()
+            
+            # Для ввода - извлекаем значения
+            if action['event_type'] == 'ВВОД':
+                value_match = re.search(r"Было: '([^']*)' → Стало: '([^']*)'", log_message)
+                if value_match:
+                    action['old_value'] = value_match.group(1)
+                    action['new_value'] = value_match.group(2)
+            
+            return action
+            
+        except Exception as e:
+            return None
+    
+    def match_trigger(self, trigger, text):
+        """Проверить соответствие триггера тексту с учетом границ слов"""
+        if not text:
+            return False
+        
+        # Убираем лишние пробелы из текста
+        text = text.strip()
+        
+        # Если триггер - это тип события (ВВОД, КЛИК, ФОКУС), проверяем точное совпадение
+        if trigger in ['ВВОД', 'КЛИК', 'ФОКУС']:
+            return trigger == text
+        
+        # Для остальных триггеров проверяем как отдельное слово
+        import re
+        # Создаем паттерн для поиска слова с границами
+        pattern = r'\b' + re.escape(trigger) + r'\b'
+        return bool(re.search(pattern, text, re.IGNORECASE))
+    
+    def detect_operation_start(self, action):
+        """Определить начало новой операции"""
+        element_name = action.get('element_name', '')
+        event_type = action.get('event_type', '')
+        path = action.get('path', '')
+        
+        for pattern_key, pattern in self.patterns.items():
+            for trigger in pattern['triggers']:
+                if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
+                    return pattern_key, pattern['name']
+        
+        return None, None
+    
+    def check_middle_triggers(self, action):
+        """Проверить соответствие промежуточным триггерам"""
+        if not self.current_operation:
+            return False, None
+        
+        element_name = action.get('element_name', '')
+        event_type = action.get('event_type', '')
+        path = action.get('path', '')
+        
+        # Получаем паттерн текущей операции
+        for pattern_key, pattern in self.patterns.items():
+            if pattern['name'] == self.current_operation.operation_type:
+                middle_triggers = pattern.get('middle_triggers', [])
+                
+                if not middle_triggers:
+                    # Если промежуточных триггеров нет, считаем что они всегда выполнены
+                    self.current_operation.middle_triggers_matched = True
+                    return True, None
+                
+                # Проверяем соответствие хотя бы одному промежуточному триггеру
+                matched = False
+                for trigger in middle_triggers:
+                    if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
+                        matched = True
+                        # Проверяем, не был ли этот триггер уже зафиксирован
+                        if trigger not in self.current_operation.matched_middle_triggers:
+                            # Отмечаем, что промежуточный триггер сработал
+                            self.current_operation.middle_triggers_matched = True
+                            # Добавляем триггер в список сработавших
+                            self.current_operation.matched_middle_triggers.append(trigger)
+                            # Сбрасываем счетчик посторонних действий
+                            self.current_operation.unrelated_actions_count = 0
+                            # Возвращаем сообщение о срабатывании триггера
+                            return True, f"   🔄 Промежуточный триггер: {trigger}"
+                        # Триггер уже был, но это релевантное действие - сбрасываем счетчик
+                        self.current_operation.unrelated_actions_count = 0
+                        return True, None
+                
+                # Действие не соответствует промежуточным триггерам
+                if not matched:
+                    # Увеличиваем счетчик посторонних действий
+                    self.current_operation.unrelated_actions_count += 1
+                
+                return True, None
+        
+        return True, None
+    
+    def detect_operation_completion(self, action):
+        """Определить завершение текущей операции"""
+        if not self.current_operation:
+            return False
+        
+        element_name = action.get('element_name', '')
+        
+        # Получаем паттерн текущей операции
+        for pattern_key, pattern in self.patterns.items():
+            if pattern['name'] == self.current_operation.operation_type:
+                # Проверяем триггеры завершения
+                for trigger in pattern['completion_triggers']:
+                    if self.match_trigger(trigger, element_name):
+                        # Проверяем, были ли промежуточные триггеры (если они требуются)
+                        middle_triggers = pattern.get('middle_triggers', [])
+                        
+                        if middle_triggers and not self.current_operation.middle_triggers_matched:
+                            # Промежуточные триггеры требуются, но не были выполнены
+                            return False
+                        
+                        # Все условия выполнены - операция завершена
+                        return True
+        
+        return False
+    
+    def check_operation_timeout(self, current_time):
+        """Проверить таймаут текущей операции"""
+        if not self.current_operation or not self.current_operation.end_time:
+            return False
+        
+        try:
+            last_action_time = datetime.strptime(self.current_operation.end_time, "%H:%M:%S.%f")
+            current = datetime.strptime(current_time, "%H:%M:%S.%f")
+            
+            # Если прошло больше таймаута - операция прервана
+            if (current - last_action_time).total_seconds() > self.operation_timeout:
+                return True
+        except:
+            pass
+        
+        return False
+    
+    def extract_context(self, actions):
+        """Извлечь контекст операции из действий"""
+        context = {}
+        
+        # Ищем имена форм/документов в путях
+        for action in actions:
+            path = action.get('path', '')
+            if 'WindowControl' in path:
+                import re
+                window_match = re.search(r"WindowControl\['([^']+)'\]", path)
+                if window_match:
+                    context['Форма'] = window_match.group(1)
+                    break
+        
+        # Ищем заполненные поля для операций ввода
+        filled_fields = []
+        for action in actions:
+            if action.get('event_type') == 'ВВОД':
+                element_name = action.get('element_name', '')
+                new_value = action.get('new_value', '')
+                if element_name and new_value:
+                    filled_fields.append(f"{element_name}={new_value}")
+        
+        if filled_fields:
+            context['Заполнено полей'] = len(filled_fields)
+        
+        return context
+    
+    def analyze_action(self, log_message):
+        """Анализировать действие и обновить состояние операций"""
+        action = self.parse_action(log_message)
+        
+        if not action:
+            return None
+        
+        self.recent_actions.append(action)
+        
+        current_time = action.get('timestamp')
+        
+        # Проверяем таймаут текущей операции
+        if self.current_operation and current_time:
+            if self.check_operation_timeout(current_time):
+                # Операция прервана по таймауту
+                self.current_operation.context = self.extract_context(self.current_operation.actions)
+                self.completed_operations.append(self.current_operation)
+                result = self.current_operation.to_string() + " | ⚠️ Прервано"
+                self.current_operation = None
+                return result
+        
+        # Инициализируем переменную для сообщения о промежуточном триггере
+        middle_trigger_msg = None
+        
+        # Проверяем завершение текущей операции
+        if self.current_operation:
+            # Проверяем промежуточные триггеры (не прерываем, просто отмечаем)
+            _, middle_trigger_msg = self.check_middle_triggers(action)
+            
+            # Проверяем превышение лимита посторонних действий
+            if self.current_operation.unrelated_actions_count > self.max_unrelated_actions:
+                # Операция отменена из-за слишком большого количества посторонних действий
+                self.current_operation.context = self.extract_context(self.current_operation.actions)
+                self.completed_operations.append(self.current_operation)
+                result = self.current_operation.to_string() + f" | ❌ Отменено (>{self.max_unrelated_actions} посторонних действий)"
+                self.current_operation = None
+                return result
+            
+            # Если сработал новый промежуточный триггер - выводим сообщение
+            if middle_trigger_msg:
+                result = middle_trigger_msg
+            
+            self.current_operation.add_action(action)
+            
+            if self.detect_operation_completion(action):
+                # Операция завершена
+                self.current_operation.completed = True
+                self.current_operation.context = self.extract_context(self.current_operation.actions)
+                self.completed_operations.append(self.current_operation)
+                result = self.current_operation.to_string()
+                self.current_operation = None
+                return result
+        
+        # Возвращаем сообщение о промежуточном триггере если оно было
+        if self.current_operation and middle_trigger_msg:
+            return middle_trigger_msg
+        
+        # Проверяем начало новой операции
+        pattern_key, operation_name = self.detect_operation_start(action)
+        
+        if pattern_key and operation_name:
+            # Если есть незавершенная операция - завершаем её
+            if self.current_operation:
+                self.current_operation.context = self.extract_context(self.current_operation.actions)
+                self.completed_operations.append(self.current_operation)
+            
+            # Начинаем новую операцию
+            self.current_operation = Operation(operation_name, current_time)
+            self.current_operation.add_action(action)
+            return f"▶️ Начало операции: {operation_name}"
+        
+        return None
+    
+    def get_statistics(self):
+        """Получить статистику по операциям"""
+        if not self.completed_operations:
+            return "Нет завершенных операций"
+        
+        total = len(self.completed_operations)
+        completed = sum(1 for op in self.completed_operations if op.completed)
+        interrupted = total - completed
+        
+        avg_duration = sum(op.get_duration() for op in self.completed_operations) / total
+        
+        return f"📈 Статистика: {total} операций | ✅ {completed} завершено | ⚠️ {interrupted} прервано | ⏱️ Средняя длительность: {avg_duration:.1f}с"
