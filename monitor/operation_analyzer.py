@@ -7,8 +7,9 @@ from collections import deque
 
 class Operation:
     """Класс для представления бизнес-операции"""
-    def __init__(self, operation_type, start_time):
+    def __init__(self, operation_type, start_time, pattern_key=None):
         self.operation_type = operation_type
+        self.pattern_key = pattern_key  # Ключ паттерна для идентификации
         self.start_time = start_time
         self.end_time = None
         self.actions = []
@@ -17,6 +18,7 @@ class Operation:
         self.middle_triggers_matched = False  # Флаг: были ли промежуточные триггеры
         self.matched_middle_triggers = []  # Список сработавших промежуточных триггеров
         self.unrelated_actions_count = 0  # Счетчик посторонних действий
+        self.alternative_operations = []  # Альтернативные операции при конфликте триггеров
     
     def add_action(self, action):
         """Добавить действие в операцию"""
@@ -191,12 +193,30 @@ class OperationAnalyzer:
         event_type = action.get('event_type', '')
         path = action.get('path', '')
         
+        matched_operations = []
+        
         for pattern_key, pattern in self.patterns.items():
+            # Если триггеров начала нет - операция всегда активна
+            if not pattern.get('triggers'):
+                # Проверяем, нет ли уже активной операции этого типа
+                if self.current_operation and self.current_operation.operation_type == pattern['name']:
+                    continue
+                matched_operations.append((pattern_key, pattern['name']))
+                continue
+            
+            # Если триггеры начала есть - проверяем их
             for trigger in pattern['triggers']:
                 if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
-                    return pattern_key, pattern['name']
+                    matched_operations.append((pattern_key, pattern['name']))
+                    break  # Достаточно одного совпадения для этого паттерна
         
-        return None, None
+        if len(matched_operations) == 0:
+            return None, None, []
+        elif len(matched_operations) == 1:
+            return matched_operations[0][0], matched_operations[0][1], matched_operations
+        else:
+            # Несколько операций могут начаться - возвращаем первую, но передаем список всех
+            return matched_operations[0][0], matched_operations[0][1], matched_operations
     
     def check_middle_triggers(self, action):
         """Проверить соответствие промежуточным триггерам"""
@@ -207,43 +227,80 @@ class OperationAnalyzer:
         event_type = action.get('event_type', '')
         path = action.get('path', '')
         
+        # Если есть альтернативные операции, проверяем возможность переключения
+        if self.current_operation.alternative_operations:
+            switch_result = self.check_operation_switch(action, element_name, event_type, path)
+            if switch_result:
+                return True, switch_result
+        
         # Получаем паттерн текущей операции
-        for pattern_key, pattern in self.patterns.items():
-            if pattern['name'] == self.current_operation.operation_type:
-                middle_triggers = pattern.get('middle_triggers', [])
-                
-                if not middle_triggers:
-                    # Если промежуточных триггеров нет, считаем что они всегда выполнены
+        pattern = self.patterns.get(self.current_operation.pattern_key)
+        if not pattern:
+            return True, None
+        
+        middle_triggers = pattern.get('middle_triggers', [])
+        
+        if not middle_triggers:
+            # Если промежуточных триггеров нет, считаем что они всегда выполнены
+            self.current_operation.middle_triggers_matched = True
+            # НО все равно считаем посторонние действия для отмены
+            self.current_operation.unrelated_actions_count += 1
+            return True, None
+        
+        # Проверяем соответствие хотя бы одному промежуточному триггеру
+        matched = False
+        for trigger in middle_triggers:
+            if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
+                matched = True
+                # Проверяем, не был ли этот триггер уже зафиксирован
+                if trigger not in self.current_operation.matched_middle_triggers:
+                    # Отмечаем, что промежуточный триггер сработал
                     self.current_operation.middle_triggers_matched = True
-                    return True, None
-                
-                # Проверяем соответствие хотя бы одному промежуточному триггеру
-                matched = False
-                for trigger in middle_triggers:
-                    if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
-                        matched = True
-                        # Проверяем, не был ли этот триггер уже зафиксирован
-                        if trigger not in self.current_operation.matched_middle_triggers:
-                            # Отмечаем, что промежуточный триггер сработал
-                            self.current_operation.middle_triggers_matched = True
-                            # Добавляем триггер в список сработавших
-                            self.current_operation.matched_middle_triggers.append(trigger)
-                            # Сбрасываем счетчик посторонних действий
-                            self.current_operation.unrelated_actions_count = 0
-                            # Возвращаем сообщение о срабатывании триггера
-                            return True, f"   🔄 Промежуточный триггер: {trigger}"
-                        # Триггер уже был, но это релевантное действие - сбрасываем счетчик
-                        self.current_operation.unrelated_actions_count = 0
-                        return True, None
-                
-                # Действие не соответствует промежуточным триггерам
-                if not matched:
-                    # Увеличиваем счетчик посторонних действий
-                    self.current_operation.unrelated_actions_count += 1
-                
+                    # Добавляем триггер в список сработавших
+                    self.current_operation.matched_middle_triggers.append(trigger)
+                    # Сбрасываем счетчик посторонних действий
+                    self.current_operation.unrelated_actions_count = 0
+                    # Возвращаем сообщение о срабатывании триггера
+                    return True, f"   🔄 Промежуточный триггер: {trigger}"
+                # Триггер уже был, но это релевантное действие - сбрасываем счетчик
+                self.current_operation.unrelated_actions_count = 0
                 return True, None
         
+        # Действие не соответствует промежуточным триггерам
+        if not matched:
+            # Увеличиваем счетчик посторонних действий
+            self.current_operation.unrelated_actions_count += 1
+        
         return True, None
+    
+    def check_operation_switch(self, action, element_name, event_type, path):
+        """Проверить возможность переключения на альтернативную операцию"""
+        # Проверяем промежуточные триггеры всех альтернативных операций
+        for alt_pattern_key in self.current_operation.alternative_operations:
+            alt_pattern = self.patterns.get(alt_pattern_key)
+            if not alt_pattern:
+                continue
+            
+            alt_middle_triggers = alt_pattern.get('middle_triggers', [])
+            
+            # Проверяем соответствие промежуточным триггерам альтернативной операции
+            for trigger in alt_middle_triggers:
+                if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
+                    # Найдено соответствие - переключаемся на эту операцию
+                    old_operation_name = self.current_operation.operation_type
+                    new_operation_name = alt_pattern['name']
+                    
+                    # Обновляем текущую операцию
+                    self.current_operation.operation_type = new_operation_name
+                    self.current_operation.pattern_key = alt_pattern_key
+                    self.current_operation.alternative_operations = []  # Очищаем альтернативы
+                    self.current_operation.middle_triggers_matched = True
+                    self.current_operation.matched_middle_triggers.append(trigger)
+                    self.current_operation.unrelated_actions_count = 0
+                    
+                    return f"   🔀 Переключение: {old_operation_name} → {new_operation_name}\n   🔄 Промежуточный триггер: {trigger}"
+        
+        return None
     
     def detect_operation_completion(self, action):
         """Определить завершение текущей операции"""
@@ -252,21 +309,23 @@ class OperationAnalyzer:
         
         element_name = action.get('element_name', '')
         
-        # Получаем паттерн текущей операции
-        for pattern_key, pattern in self.patterns.items():
-            if pattern['name'] == self.current_operation.operation_type:
-                # Проверяем триггеры завершения
-                for trigger in pattern['completion_triggers']:
-                    if self.match_trigger(trigger, element_name):
-                        # Проверяем, были ли промежуточные триггеры (если они требуются)
-                        middle_triggers = pattern.get('middle_triggers', [])
-                        
-                        if middle_triggers and not self.current_operation.middle_triggers_matched:
-                            # Промежуточные триггеры требуются, но не были выполнены
-                            return False
-                        
-                        # Все условия выполнены - операция завершена
-                        return True
+        # Получаем паттерн текущей операции по ключу
+        pattern = self.patterns.get(self.current_operation.pattern_key)
+        if not pattern:
+            return False
+        
+        # Проверяем триггеры завершения
+        for trigger in pattern['completion_triggers']:
+            if self.match_trigger(trigger, element_name):
+                # Проверяем, были ли промежуточные триггеры (если они требуются)
+                middle_triggers = pattern.get('middle_triggers', [])
+                
+                if middle_triggers and not self.current_operation.middle_triggers_matched:
+                    # Промежуточные триггеры требуются, но не были выполнены
+                    return False
+                
+                # Все условия выполнены - операция завершена
+                return True
         
         return False
     
@@ -290,16 +349,6 @@ class OperationAnalyzer:
     def extract_context(self, actions):
         """Извлечь контекст операции из действий"""
         context = {}
-        
-        # Ищем имена форм/документов в путях
-        for action in actions:
-            path = action.get('path', '')
-            if 'WindowControl' in path:
-                import re
-                window_match = re.search(r"WindowControl\['([^']+)'\]", path)
-                if window_match:
-                    context['Форма'] = window_match.group(1)
-                    break
         
         # Ищем заполненные поля для операций ввода
         filled_fields = []
@@ -373,7 +422,7 @@ class OperationAnalyzer:
             return middle_trigger_msg
         
         # Проверяем начало новой операции
-        pattern_key, operation_name = self.detect_operation_start(action)
+        pattern_key, operation_name, all_operations = self.detect_operation_start(action)
         
         if pattern_key and operation_name:
             # Если есть незавершенная операция - завершаем её
@@ -382,9 +431,28 @@ class OperationAnalyzer:
                 self.completed_operations.append(self.current_operation)
             
             # Начинаем новую операцию
-            self.current_operation = Operation(operation_name, current_time)
+            self.current_operation = Operation(operation_name, current_time, pattern_key)
             self.current_operation.add_action(action)
-            return f"▶️ Начало операции: {operation_name}"
+            
+            # Сохраняем альтернативные операции для возможного переключения
+            if len(all_operations) > 1:
+                # Сохраняем ключи паттернов альтернативных операций
+                self.current_operation.alternative_operations = [
+                    key for key, name in all_operations if name != operation_name
+                ]
+            
+            # Проверяем, есть ли триггеры начала
+            pattern = self.patterns.get(pattern_key, {})
+            if pattern.get('triggers'):
+                # Если несколько операций могут начаться - показываем все варианты
+                if len(all_operations) > 1:
+                    operations_str = " или ".join([name for _, name in all_operations])
+                    return f"▶️ Начало операции: {operations_str}"
+                else:
+                    return f"▶️ Начало операции: {operation_name}"
+            else:
+                # Операция без триггеров начала - не выводим сообщение о начале
+                return None
         
         return None
     

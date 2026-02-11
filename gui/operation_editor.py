@@ -3,7 +3,8 @@
 """
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QListWidget, QLabel, QLineEdit, QTextEdit, 
-                             QGroupBox, QFormLayout, QMessageBox, QListWidgetItem)
+                             QGroupBox, QFormLayout, QMessageBox, QListWidgetItem,
+                             QCheckBox)
 from PyQt5.QtCore import Qt
 import json
 import os
@@ -72,6 +73,12 @@ class OperationEditor(QDialog):
         # Группа триггеров начала
         start_group = QGroupBox("Триггеры начала операции")
         start_layout = QVBoxLayout()
+        
+        # Чекбокс для включения/отключения триггеров начала
+        self.use_start_triggers = QCheckBox("Использовать триггеры начала")
+        self.use_start_triggers.setChecked(True)
+        self.use_start_triggers.stateChanged.connect(self.on_start_triggers_toggle)
+        start_layout.addWidget(self.use_start_triggers)
         
         start_help = QLabel("Укажите слова/фразы, которые запускают операцию.\nКаждый триггер с новой строки.")
         start_help.setStyleSheet("color: gray; font-size: 10px;")
@@ -181,8 +188,16 @@ class OperationEditor(QDialog):
             self.name_input.setText(pattern['name'])
             
             # Триггеры начала
-            start_triggers = '\n'.join(pattern.get('triggers', []))
-            self.start_triggers.setPlainText(start_triggers)
+            start_triggers_list = pattern.get('triggers', [])
+            if start_triggers_list:
+                self.use_start_triggers.setChecked(True)
+                start_triggers = '\n'.join(start_triggers_list)
+                self.start_triggers.setPlainText(start_triggers)
+                self.start_triggers.setEnabled(True)
+            else:
+                self.use_start_triggers.setChecked(False)
+                self.start_triggers.clear()
+                self.start_triggers.setEnabled(False)
             
             # Промежуточные триггеры
             middle_triggers = '\n'.join(pattern.get('middle_triggers', []))
@@ -207,7 +222,9 @@ class OperationEditor(QDialog):
         self.key_input.clear()
         self.key_input.setEnabled(True)
         self.name_input.clear()
+        self.use_start_triggers.setChecked(True)
         self.start_triggers.clear()
+        self.start_triggers.setEnabled(True)
         self.middle_triggers.clear()
         self.end_triggers.clear()
         self.timeout_input.setText("30")
@@ -219,6 +236,13 @@ class OperationEditor(QDialog):
         
         # Фокус на ключ
         self.key_input.setFocus()
+    
+    def on_start_triggers_toggle(self):
+        """Обработка переключения чекбокса триггеров начала"""
+        enabled = self.use_start_triggers.isChecked()
+        self.start_triggers.setEnabled(enabled)
+        if not enabled:
+            self.start_triggers.clear()
     
     def save_current_pattern(self):
         """Сохранить текущий паттерн"""
@@ -240,13 +264,15 @@ class OperationEditor(QDialog):
             return
         
         # Собираем триггеры
-        start_triggers = [t.strip() for t in self.start_triggers.toPlainText().split('\n') if t.strip()]
+        start_triggers = []
+        if self.use_start_triggers.isChecked():
+            start_triggers = [t.strip() for t in self.start_triggers.toPlainText().split('\n') if t.strip()]
+            if not start_triggers:
+                QMessageBox.warning(self, "Ошибка", "Если используются триггеры начала, укажите хотя бы один")
+                return
+        
         middle_triggers = [t.strip() for t in self.middle_triggers.toPlainText().split('\n') if t.strip()]
         end_triggers = [t.strip() for t in self.end_triggers.toPlainText().split('\n') if t.strip()]
-        
-        if not start_triggers:
-            QMessageBox.warning(self, "Ошибка", "Укажите хотя бы один триггер начала")
-            return
         
         if not end_triggers:
             QMessageBox.warning(self, "Ошибка", "Укажите хотя бы один триггер завершения")
@@ -306,7 +332,9 @@ class OperationEditor(QDialog):
             self.current_pattern_key = None
             self.key_input.clear()
             self.name_input.clear()
+            self.use_start_triggers.setChecked(True)
             self.start_triggers.clear()
+            self.start_triggers.setEnabled(True)
             self.middle_triggers.clear()
             self.end_triggers.clear()
             self.description_input.clear()
@@ -325,8 +353,13 @@ class OperationEditor(QDialog):
         pattern = self.analyzer.patterns[self.current_pattern_key]
         
         test_info = f"Операция: {pattern['name']}\n\n"
-        test_info += f"Триггеры начала ({len(pattern['triggers'])}):\n"
-        test_info += "  • " + "\n  • ".join(pattern['triggers']) + "\n\n"
+        
+        if pattern.get('triggers'):
+            test_info += f"Триггеры начала ({len(pattern['triggers'])}):\n"
+            test_info += "  • " + "\n  • ".join(pattern['triggers']) + "\n\n"
+        else:
+            test_info += "Триггеры начала: не используются\n"
+            test_info += "  ℹ️ Операция начинается сразу при запуске мониторинга\n\n"
         
         if pattern.get('middle_triggers'):
             test_info += f"Промежуточные триггеры ({len(pattern['middle_triggers'])}):\n"

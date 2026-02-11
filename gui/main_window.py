@@ -54,14 +54,17 @@ class MainWindow(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle("1С UI Monitor")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1200, 600)
         
         # Окно поверх всех приложений
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        
+        # Левая часть - основной интерфейс
+        left_layout = QVBoxLayout()
         
         # Панель управления - строка 1
         control_layout1 = QHBoxLayout()
@@ -79,7 +82,7 @@ class MainWindow(QMainWindow):
         control_layout1.addWidget(self.log_label)
         
         self.focus_checkbox = QCheckBox("ФОКУС")
-        self.focus_checkbox.setChecked(True)
+        self.focus_checkbox.setChecked(False)
         self.focus_checkbox.stateChanged.connect(self.on_settings_changed)
         control_layout1.addWidget(self.focus_checkbox)
         
@@ -93,7 +96,7 @@ class MainWindow(QMainWindow):
         self.input_checkbox.stateChanged.connect(self.on_settings_changed)
         control_layout1.addWidget(self.input_checkbox)
         
-        layout.addLayout(control_layout1)
+        left_layout.addLayout(control_layout1)
         
         # Панель управления - строка 2
         control_layout2 = QHBoxLayout()
@@ -119,32 +122,53 @@ class MainWindow(QMainWindow):
         self.editor_btn.clicked.connect(self.open_operation_editor)
         control_layout2.addWidget(self.editor_btn)
         
-        layout.addLayout(control_layout2)
+        left_layout.addLayout(control_layout2)
         
         # Область логов
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        layout.addWidget(self.log_area)
+        left_layout.addWidget(self.log_area)
         
         # Разделитель
         separator_label = QLabel("Расшифровка элементов:")
-        layout.addWidget(separator_label)
+        left_layout.addWidget(separator_label)
         
         # Область расшифровки
         self.decode_area = QTextEdit()
         self.decode_area.setReadOnly(True)
         self.decode_area.setMaximumHeight(120)
-        layout.addWidget(self.decode_area)
+        left_layout.addWidget(self.decode_area)
         
         # Разделитель для операций
         operations_label = QLabel("Распознанные операции:")
-        layout.addWidget(operations_label)
+        left_layout.addWidget(operations_label)
         
         # Область операций
         self.operations_area = QTextEdit()
         self.operations_area.setReadOnly(True)
         self.operations_area.setMaximumHeight(120)
-        layout.addWidget(self.operations_area)
+        left_layout.addWidget(self.operations_area)
+        
+        # Добавляем левую часть в главный layout
+        main_layout.addLayout(left_layout, 3)
+        
+        # Правая часть - история операций
+        right_layout = QVBoxLayout()
+        
+        history_label = QLabel("История операций:")
+        right_layout.addWidget(history_label)
+        
+        self.history_area = QTextEdit()
+        self.history_area.setReadOnly(True)
+        right_layout.addWidget(self.history_area)
+        
+        # Кнопка очистки истории
+        clear_history_btn = QPushButton("Очистить историю")
+        clear_history_btn.clicked.connect(self.clear_history)
+        right_layout.addWidget(clear_history_btn)
+        
+        # Добавляем правую часть в главный layout
+        main_layout.addLayout(right_layout, 1)
         
         # Статус бар
         self.statusBar().showMessage("Готов к работе")
@@ -233,6 +257,10 @@ class MainWindow(QMainWindow):
         self.operations_area.clear()
         # Сбрасываем анализатор операций
         self.operation_analyzer = OperationAnalyzer()
+    
+    def clear_history(self):
+        """Очистить историю операций"""
+        self.history_area.clear()
     
     def ensure_log_directory(self):
         """Создать директорию для логов если её нет"""
@@ -432,8 +460,17 @@ class MainWindow(QMainWindow):
                 cursor.movePosition(cursor.End)
                 self.operations_area.setTextCursor(cursor)
                 
-                # Обновляем статистику в статус-баре при завершении операции
-                if '✅ Завершено' in result or '⚠️ Прервано' in result:
+                # Если операция завершена или прервана - добавляем в историю
+                if '✅ Завершено' in result or '⚠️ Прервано' in result or '❌ Отменено' in result:
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+                    self.history_area.append(f"[{timestamp}] {result}")
+                    
+                    # Прокручиваем историю вниз
+                    cursor = self.history_area.textCursor()
+                    cursor.movePosition(cursor.End)
+                    self.history_area.setTextCursor(cursor)
+                    
+                    # Обновляем статистику в статус-баре
                     stats = self.operation_analyzer.get_statistics()
                     self.statusBar().showMessage(stats, 5000)
                     
