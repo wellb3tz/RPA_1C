@@ -283,6 +283,25 @@ class OperationAnalyzer:
             
             alt_middle_triggers = alt_pattern.get('middle_triggers', [])
             
+            # Если у альтернативной операции нет промежуточных триггеров
+            # проверяем триггеры завершения - возможно это она
+            if not alt_middle_triggers:
+                for trigger in alt_pattern.get('completion_triggers', []):
+                    if self.match_trigger(trigger, element_name):
+                        # Найдено соответствие триггеру завершения - переключаемся
+                        old_operation_name = self.current_operation.operation_type
+                        new_operation_name = alt_pattern['name']
+                        
+                        # Обновляем текущую операцию
+                        self.current_operation.operation_type = new_operation_name
+                        self.current_operation.pattern_key = alt_pattern_key
+                        self.current_operation.alternative_operations = []
+                        self.current_operation.middle_triggers_matched = True
+                        self.current_operation.unrelated_actions_count = 0
+                        
+                        return f"   🔀 Переключение: {old_operation_name} → {new_operation_name} (по триггеру завершения)"
+                continue
+            
             # Проверяем соответствие промежуточным триггерам альтернативной операции
             for trigger in alt_middle_triggers:
                 if self.match_trigger(trigger, element_name) or self.match_trigger(trigger, event_type) or self.match_trigger(trigger, path):
