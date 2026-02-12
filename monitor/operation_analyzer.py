@@ -65,57 +65,8 @@ class OperationAnalyzer:
         self.operation_timeout = 30  # Таймаут операции в секундах
         self.max_unrelated_actions = 5  # Максимум посторонних действий
         
-        # Паттерны операций
-        self.patterns = {
-            'create_document': {
-                'triggers': ['Создать', 'Добавить', 'Новый'],
-                'name': 'Создание документа',
-                'middle_triggers': ['ВВОД', 'ФОКУС'],
-                'completion_triggers': ['Записать', 'Провести', 'ОК']
-            },
-            'edit_document': {
-                'triggers': ['Изменить', 'Редактировать'],
-                'name': 'Редактирование документа',
-                'middle_triggers': ['ВВОД', 'ФОКУС'],
-                'completion_triggers': ['Записать', 'Провести', 'ОК']
-            },
-            'select_item': {
-                'triggers': ['Выбрать', 'Подбор'],
-                'name': 'Выбор элемента',
-                'middle_triggers': ['КЛИК', 'ФОКУС'],
-                'completion_triggers': ['Выбрать', 'ОК']
-            },
-            'fill_form': {
-                'triggers': ['ВВОД'],
-                'name': 'Заполнение формы',
-                'middle_triggers': ['ВВОД', 'ФОКУС', 'КЛИК'],
-                'completion_triggers': ['Записать', 'Провести', 'ОК', 'Сохранить']
-            },
-            'search': {
-                'triggers': ['Найти', 'Поиск'],
-                'name': 'Поиск',
-                'middle_triggers': ['ВВОД'],
-                'completion_triggers': ['Найти', 'ОК']
-            },
-            'delete': {
-                'triggers': ['Удалить', 'Пометить на удаление'],
-                'name': 'Удаление',
-                'middle_triggers': [],
-                'completion_triggers': ['Да', 'ОК']
-            },
-            'print': {
-                'triggers': ['Печать', 'Напечатать'],
-                'name': 'Печать документа',
-                'middle_triggers': [],
-                'completion_triggers': ['Печать', 'ОК']
-            },
-            'report': {
-                'triggers': ['Сформировать', 'Отчет'],
-                'name': 'Формирование отчета',
-                'middle_triggers': ['ВВОД', 'КЛИК'],
-                'completion_triggers': ['Сформировать', 'ОК']
-            }
-        }
+        # Паттерны операций (загружаются из файла или создаются в редакторе)
+        self.patterns = {}
     
     def parse_action(self, log_message):
         """Разобрать лог-сообщение в структурированное действие"""

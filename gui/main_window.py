@@ -257,6 +257,8 @@ class MainWindow(QMainWindow):
         self.operations_area.clear()
         # Сбрасываем анализатор операций
         self.operation_analyzer = OperationAnalyzer()
+        # Загружаем паттерны из файла
+        self.load_operation_patterns()
     
     def clear_history(self):
         """Очистить историю операций"""
